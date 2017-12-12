@@ -1,0 +1,138 @@
+---
+title: "Bayesian linear regression model"
+author: "Nicole Li"
+date: "12/4/2017"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_library,results="hide",message=FALSE,warning=FALSE}
+library(FinTS)
+library(forecast)
+library(MCMCpack)
+library(broom)
+```
+  
+Loading the dataset  
+```{r load_data}
+#rm(list = ls(all = TRUE))  # use for cleaning up all previous vectors
+load("~/Library/Mobile Documents/com~apple~CloudDocs/Bentley/Fall 2017/MA611/R/product.rdata")
+plot(product)
+boxplot(product~cycle(product))
+```
+We observe that the dataset appears to have trend and randomness. From boxplot we can conclude that the data does not have seasonality.  
+
+We now divide our dataset into training data and test data. We will build our model on training data and compare the predictions from this model with the actual data. Training dataset has the last 12 months value from the original dataset.  
+
+```{r split_data}
+prdtr = window(product,start=c(1994,5),end=c(2014,2)) # training dataset. henceforth called as data
+prdtst=window(product,start=c(2014,3),end=c(2015,2))  # test dataset
+prod.time.tr=time(prdtr)                              # extracting time component from data
+prod.seas.tr=cycle(prdtr)                             # extracting seasonality
+prod.data.tr = coredata(prdtr)                        #extracting core data
+```
+
+From the time plot of the data we notice that there is a curve in the data and thus quadratic term may be required. Unlike normal regression (lm) the analysis pack we are using ony supports the linear regression model, so we have computed the quadratic component manually and used it in our model just as a linear one
+```{r create_predictor}
+prod.time.tr2=prod.time.tr^2
+
+```
+  
+Now we build our model using MCMCregress which is part of MCMCpack. MCMC sampling requires priors on all parameters. However,we will employ weakly informative priors. Specifying 'uninformative' priors is always a bit of a balancing act. If the priors are too vague (wide) the MCMC sampler can wander off into nonscence areas of likelihood rather than concentrate around areas of highest likelihood (desired when wanting the outcomes to be largely driven by the data). On the other hand, if the priors are too strong, they may have an influence on the parameters. In such a simple model, this balance is very forgiving - it is for more complex models that prior choice becomes more important.  
+
+For this simple model as an example, we will go with zero-centered Gaussian (normal) priors with relatively large standard deviations (1000) for both the intercept and the treatment effects.  
+
+The model takes the following form  
+
+$y_i = x_i'\beta + \epsilon_i$  
+where errors are assumed to be Gaussian:  
+$\epsilon_i \sim N(0, \sigma^2)$  
+
+For our example we have assumed non informative priors 
+
+
+```{r MCMCregress}
+prod.reg2.tr= MCMCregress(prod.data.tr~prod.time.tr+prod.time.tr2)
+summary(prod.reg2.tr)
+```
+
+The summary output of MCMCregress looks somewhat similar to the output of lm() but there are some conceptual differences in the output  
+1. The output from MCMCregress speaks directly of what posteriors of the parameters are and does not refer to any hypothesis tests  
+2.Output shows the quantiles of exact posterior for each distribution  
+3.The output contains a $\sigma 2$ parameter which  is the variance of distribution of $y_i$
+
+#Diagnostics  
+## Diagnostics of Regression
+```{r}
+mymcmc=as.data.frame(prod.reg2.tr)
+newdata=data.frame(x=prod.time.tr, x2=prod.time.tr2)
+xmat=model.matrix(~x+x2,newdata)
+coefs=apply(mymcmc[,1:3],2,mean)
+fit=as.vector(coefs %*% t(xmat))
+e=prod.data.tr-fit #residual
+ste=e/sd(e)
+```
+
+
+```{r}
+plot(e~fit,xlab = "Fitted Values",ylab ="Residuals",main ="Residuals vs. Fitted")
+hist(e,xlab="Residuals",ylab = "Frequency",main="Histogram of Residuals")
+plot(e~prod.time.tr)
+plot(e~prod.time.tr2)
+plot(ste~fit)
+```
+
+```
+for Bayesian analyses, it is necessary to explore the characteristics of the MCMC chains and the sampler in general.Purpose of MCMC sampling is to replicate the posterior distribution of the model likelihood and priors by drawing a known number of samples from this posterior (thereby formulating a probability distribution). This is only reliable if the MCMC samples accurately reflect the posterior.One of the best ways of evaluating whether or not sufficient samples have been collected is with a trace plot. 
+
+Trace plots essentially display the iterative history of MCMC sequences. Ideally, the trace plot should show no trends, just consistent random noise around a stable baseline. 
+
+```{r Traceplots_pdf}
+par(mar=c(1,1,1,1))
+par(mfrow=c(2,2))
+plot(prod.reg2.tr)
+```
+From the plots we see that chains have traversed the entire multidimension of parameter space. From the density plots, we notice that density plots of posterior distribution reflects normal distribution because we have considered our priors to be normally distributed.  
+
+We want our samples taken in Markov chain to be independent. We run a ACF plot to see if the samples are actually independent
+
+```{r autocorr}
+autocorr.diag(prod.reg2.tr)
+autocorr.plot(prod.reg2.tr,lag.max=25)
+```
+  
+
+We now create a sequence of time interval for which prediction is to be made. We also manualy create the parameter of time^2 since we ahve used that as a parameter in our linear regression.
+
+```{r prediction_time_vector}
+predtime = seq(2014.167,2015.0833,by=0.0833)
+predtime2=predtime^2
+```
+Note that output of MCMCregress is not a model but the posterior values of predictors, We have to manually forecast using the coefficients from the output of MCMCregress function  
+```{r Baye_Forecast}
+forecastbayes=-1.396432e+07+1.386397e+04*predtime-3.440712*predtime2
+forecastbayes
+```
+On the same dataset, we not perform a linear regression and make a prediction
+```{r linear_regression}
+lm.tr = lm(prod.data.tr~prod.time.tr+I(prod.time.tr^2))
+lm.tr.predict = predict(lm.tr,data.frame(prod.time.tr = predtime))
+lm.tr.predict
+
+```
+
+Now calculating the RMSE of both Bayesian Linear regression and linear regression  
+```{r RMSE}
+ebayes= forecastbayes-prdtst
+elm = lm.tr.predict-prdtst
+rmsebayes=sqrt(sum(ebayes^2)/length(ebayes))
+rmselm=sqrt(sum(elm^2)/length(elm))
+cat("RMSE of Bayes Regression method is: ", rmsebayes)
+cat("RMSE of  Regression method is: ", rmselm)
+
+```
+We notice that the RMSE of Bayesian Linear Regression is better than the normal linear regression.
